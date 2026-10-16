@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>graph-buyer — FalkorDB donor-car agent</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --txt:#e6edf3; --dim:#8b949e;
+          --green:#3fb950; --red:#f85149; --amber:#d29922; --blue:#58a6ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt); font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  header { padding:28px 24px 12px; max-width:900px; margin:0 auto; }
+  header h1 { margin:0 0 4px; font-size:26px; letter-spacing:-.5px; }
+  header h1 span { color:var(--green); }
+  header p { margin:0; color:var(--dim); font-size:14px; }
+  main { max-width:900px; margin:0 auto; padding:12px 24px 60px; }
+  .bar { display:flex; gap:10px; margin:18px 0 6px; }
+  input[type=text] { flex:1; background:var(--panel); border:1px solid var(--line); color:var(--txt);
+    border-radius:8px; padding:12px 14px; font-size:16px; font-family:ui-monospace,Menlo,monospace; }
+  input[type=text]:focus { outline:none; border-color:var(--blue); }
+  button { background:var(--green); color:#06281a; border:0; border-radius:8px; padding:0 22px;
+    font-size:16px; font-weight:700; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  .hint { color:var(--dim); font-size:12px; margin:4px 0 20px; }
+  .badges { display:flex; gap:8px; flex-wrap:wrap; margin:14px 0; }
+  .badge { font-size:12px; padding:5px 10px; border-radius:20px; border:1px solid var(--line); color:var(--dim); }
+  .badge.hot { color:#ffd479; border-color:var(--amber); }
+  .badge.warn { color:#ffb3ab; border-color:var(--red); }
+  .badge.ok { color:#9ee6a8; border-color:var(--green); }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:14px 16px; margin:10px 0; display:flex; gap:14px; align-items:center; }
+  .card.pull { border-color:var(--green); }
+  .card .verdict { font-weight:800; font-size:13px; padding:4px 10px; border-radius:6px; min-width:64px; text-align:center; }
+  .verdict.PULL { background:var(--green); color:#06281a; }
+  .verdict.SKIP { background:#21262d; color:var(--dim); }
+  .card .info { flex:1; }
+  .card .part { font-weight:600; font-size:15px; }
+  .card .price { color:var(--dim); font-size:13px; margin-top:2px; }
+  .meter { height:6px; background:#21262d; border-radius:3px; margin-top:8px; overflow:hidden; }
+  .meter i { display:block; height:100%; background:var(--blue); border-radius:3px; }
+  .card.pull .meter i { background:var(--green); }
+  .card .score { font-size:13px; color:var(--dim); min-width:70px; text-align:right; }
+  details { margin-top:22px; }
+  details summary { cursor:pointer; color:var(--dim); font-size:13px; }
+  details pre { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px;
+    font-size:12px; color:var(--dim); white-space:pre-wrap; max-height:320px; overflow:auto; }
+  .loading { color:var(--dim); padding:30px 0; text-align:center; font-size:14px; }
+  .spinner { display:inline-block; width:16px; height:16px; border:2px solid var(--line);
+    border-top-color:var(--green); border-radius:50%; animation:spin 1s linear infinite; vertical-align:-3px; margin-right:8px; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .err { color:var(--red); background:#3d1414; border:1px solid var(--red); border-radius:8px; padding:12px 14px; font-size:14px; }
+  h2.vehicle { font-size:20px; margin:6px 0 2px; }
+  .section-title { color:var(--dim); font-size:12px; text-transform:uppercase; letter-spacing:1px; margin:22px 0 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>graph<span>-</span>buyer</h1>
+  <p>FalkorDB graph agent · VIN in, pull verdicts out · teardown-parts MCP tooling</p>
+</header>
+<main>
+  <div class="bar">
+    <input id="vin" type="text" maxlength="17" placeholder="Enter 17-char VIN" value="1HGCM82633A004352" spellcheck="false">
+    <button id="go">Evaluate</button>
+  </div>
+  <p class="hint">First run on a new vehicle can take up to ~60s — every price is looked up live. Re-runs hit graph memory and skip re-pricing.</p>
+  <div id="out"></div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const out = $('out'), go = $('go'), vinEl = $('vin');
+
+function money(n){ return n==null ? '—' : '$' + Number(n).toFixed(2).replace(/\.00$/,''); }
+
+async function run(){
+  const vin = vinEl.value.trim().toUpperCase();
+  if (vin.length !== 17) { out.innerHTML = '<div class="err">VIN must be 17 characters.</div>'; return; }
+  go.disabled = true;
+  out.innerHTML = '<div class="loading"><span class="spinner"></span>Agent is working — decoding VIN, checking memory, pricing parts…</div>';
+  try {
+    const r = await fetch('/api/buy?vin=' + encodeURIComponent(vin));
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    render(d);
+  } catch(e) {
+    out.innerHTML = '<div class="err">Error: ' + String(e.message||e).replace(/</g,'&lt;') + '</div>';
+  } finally { go.disabled = false; }
+}
+
+function render(d){
+  const pulls = d.decisions.filter(x => x.verdict === 'PULL');
+  const memLine = (d.trace||[]).find(t => t.includes('memory hit'));
+  const memN = memLine ? memLine.match(/(\d+) prior/)?.[1] : null;
+  let h = '<h2 class="vehicle">' + esc(d.vehicle||d.vin) + '</h2>';
+  h += '<div class="badges">';
+  h += '<span class="badge">' + d.decisions.length + ' parts evaluated</span>';
+  h += '<span class="badge ok">' + pulls.length + ' PULL</span>';
+  if (d.openRecalls) h += '<span class="badge warn">' + d.openRecalls + ' open recalls</span>';
+  if (memN) h += '<span class="badge hot">⚡ memory hit: ' + memN + ' prior decisions</span>';
+  else h += '<span class="badge">first look — no prior memory</span>';
+  h += '</div>';
+
+  h += '<div class="section-title">Pull list</div>';
+  const sorted = [...d.decisions].sort((a,b) => (b.verdict==='PULL')-(a.verdict==='PULL') || b.score-a.score);
+  for (const x of sorted) {
+    h += '<div class="card ' + x.verdict.toLowerCase() + '">'
+       + '<span class="verdict ' + x.verdict + '">' + x.verdict + '</span>'
+       + '<div class="info"><div class="part">' + esc(x.part) + '</div>'
+       + '<div class="price">' + money(x.p25) + ' – ' + money(x.p75) + ' (eBay p25–p75)</div>'
+       + '<div class="meter"><i style="width:' + Math.min(100,x.score) + '%"></i></div></div>'
+       + '<div class="score">score ' + x.score + '</div></div>';
+  }
+  h += '<details><summary>decision trace (' + d.trace.length + ' steps)</summary><pre>'
+     + d.trace.map(esc).join('\n') + '</pre></details>';
+  out.innerHTML = h;
+}
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+go.onclick = run;
+vinEl.onkeydown = e => { if (e.key === 'Enter') run(); };
+</script>
+</body>
+</html>
