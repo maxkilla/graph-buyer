@@ -3,9 +3,12 @@ import { FalkorDB } from 'falkordb';
 // Connect to local FalkorDB (docker run -p 6379:6379 falkordb/falkordb:latest)
 // and select this project's isolated graph.
 export async function connectGraph() {
+  // Documented client form: socket for host/port, top-level for auth.
   const opts = {
-    host: process.env.FALKORDB_HOST || 'localhost',
-    port: Number(process.env.FALKORDB_PORT || 6379),
+    socket: {
+      host: (process.env.FALKORDB_HOST || 'localhost').split(':')[0],
+      port: Number(process.env.FALKORDB_PORT || 6379),
+    },
   };
   // FalkorDB Cloud needs auth; local docker usually doesn't.
   if (process.env.FALKORDB_USER) opts.username = process.env.FALKORDB_USER;
