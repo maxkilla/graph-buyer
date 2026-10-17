@@ -76,7 +76,7 @@
     <pre>DonorCar ──HAS_PART──▶ Part ──HAS_PRICE_SIGNAL──▶ PriceSignal <span class="dim">(live eBay)</span>
    │                    ╰──LED_TO_DECISION──▶ Decision <span class="dim">(PULL / SKIP)</span>
    ╰──SIMILAR_TO──▶ DonorCar <span class="dim">(same year/make/model — inherits outcomes)</span>
-   Part \u2500\u2500HAS_NUMBER\u2500\u2500\u25b6 PartNumber \u2500\u2500LISTED_FOR\u2500\u25b6 FitVehicle <span class="dim">(real interchange)</span></pre>
+   Part ──HAS_NUMBER──▶ PartNumber ──LISTED_FOR─▶ FitVehicle <span class="dim">(real interchange)</span></pre>
     <p class="dim">Every run reads and writes this FalkorDB graph. Fresh PriceSignals are reused — no repeat searches. Shared Part nodes show which other donors carry the same part.</p>
   </details>
   <div id="out"></div>

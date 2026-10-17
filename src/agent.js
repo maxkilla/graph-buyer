@@ -23,7 +23,7 @@ export async function runBuyer(vin, { sellThrough = false } = {}) {
 
   // 2. Memory check: was this donor already priced in a past session?
   const prior = rows(
-    await graph.query(`MATCH (d:DonorCar {vin: $vin})-[:HAS_PART]->(p:Part)-[:LED_TO_DECISION]->(dec:Decision) RETURN p.name AS part, dec.verdict AS verdict`, { params: { vin } }),
+    await graph.query(`MATCH (d:DonorCar {vin: $vin})-[:HAS_PART]->(p:Part)-[:LED_TO_DECISION]->(dec:Decision {vin: $vin}) RETURN p.name AS part, dec.verdict AS verdict`, { params: { vin } }),
   );
   const priorByPart = Object.fromEntries(prior.map((p) => [p.part, p.verdict]));
   if (prior.length) trace.push(`memory hit: ${prior.length} prior decision(s) for this VIN`);
@@ -38,6 +38,7 @@ export async function runBuyer(vin, { sellThrough = false } = {}) {
   const similar = rows(
     await graph.query(
       `MATCH (d:DonorCar {vin: $vin})-[:SIMILAR_TO]->(s:DonorCar)-[:HAS_PART]->(p:Part)-[:LED_TO_DECISION]->(dec:Decision)
+       WHERE dec.vin = s.vin
        RETURN s.vin AS donor, p.name AS part, dec.verdict AS verdict`,
       { params: { vin } },
     ),
@@ -85,6 +86,14 @@ export async function runBuyer(vin, { sellThrough = false } = {}) {
   const decisions = [];
   const topPulls = [];
   if (pricing === 'memory') {
+    await graph.query(
+      `MATCH (d:DonorCar {vin: $vin}) UNWIND $rows AS r
+       MATCH (d)-[:HAS_PART]->(p:Part {name: r.part})
+       MERGE (dec:Decision {vin: $vin, part: r.part})
+       SET dec.verdict = r.verdict, dec.at = $at
+       MERGE (p)-[:LED_TO_DECISION]->(dec)`,
+      { params: { vin, at: new Date().toISOString(), rows: donorParts.map((part) => ({ part, verdict: signalByPart[part].score >= PULL_SCORE_THRESHOLD ? 'PULL' : 'SKIP' })) } },
+    );
     trace.push(`0 live searches — ${donorParts.length} part(s) priced from graph memory (signals fresh as of ${cutoff.slice(0, 10)})`);
     for (const part of donorParts) {
       const s = signalByPart[part];
@@ -129,7 +138,9 @@ export async function runBuyer(vin, { sellThrough = false } = {}) {
          MERGE (d)-[:HAS_PART]->(p)
          CREATE (s:PriceSignal {vin: $vin, p25: $p25, p75: $p75, listings: $listings, score: $score, checked_at: $at})
          CREATE (p)-[:HAS_PRICE_SIGNAL]->(s)
-         CREATE (p)-[:LED_TO_DECISION]->(:Decision {part: $part, verdict: $verdict, cached: $cached, at: $at})`,
+         MERGE (dec:Decision {vin: $vin, part: $part})
+         SET dec.verdict = $verdict, dec.cached = $cached, dec.at = $at
+         MERGE (p)-[:LED_TO_DECISION]->(dec)`,
         {
           params: {
             vin,

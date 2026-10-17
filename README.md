@@ -1,44 +1,63 @@
 # graph-buyer
 
-A FalkorDB graph agent that decides which parts to pull off a donor car — and shows the path behind every answer. Graph Hacks 2026 entry (Track 01: Agents That Act on Connected Data, Track 02: Agent Memory and Coordination).
+A FalkorDB graph agent that decides which parts to pull off a donor car, and shows the path behind every answer.
+Built for **Graph Hacks 2026** (WeMakeDevs x FalkorDB). Tracks: **01 Agents That Act on Connected Data** and **02 Agent Memory and Coordination**.
+
+**Live demo:** https://graph-buyer.vercel.app  (enter a VIN, press Evaluate)
 
 ## The idea
 
-Salvage-yard buying is a connections problem: which parts a donor carries, what they sell for, what sold before, what past decisions said. graph-buyer puts that in a FalkorDB graph and reasons over it. The agent's context layer is the graph — not prompts.
+Salvage-yard buying is a connections problem: which parts a donor car carries, what they sell for, what sold before, which other cars share the part, and what past decisions said. graph-buyer keeps all of that in a FalkorDB graph and reasons over it. The graph is the agent's context layer, not the prompt.
 
-## How it works
+## How the agent works
 
 ```
-VIN in → decode_vin → DonorCar node
-       → checkRecalls → RECALL_FLAG edges
-       → graph query: similar donors (SIMILAR_TO) + their past decisions
-       → get_pull_sheet → Part nodes + PriceSignal nodes + Decision nodes
-       → (optional) check_sell_through on top PULLs (on-demand, extra API calls)
-       → verdict table + decision trace printed
+VIN in -> decode_vin                  -> DonorCar node
+       -> graph: prior decisions      (memory check, scoped to this VIN)
+       -> graph: SIMILAR_TO donors    (same year/make/model) and their decisions
+       -> check_recalls               -> Recall nodes + RECALL_FLAG edges
+       -> graph: fresh PriceSignals?  yes -> price from memory, 0 live searches
+                                      no  -> get_pull_sheet (live eBay) -> PriceSignal + Decision nodes
+       -> graph: shared Part nodes    -> which other donors can use a pulled part
+       -> verdict table + decision trace
+       (on demand) find_interchange   -> part numbers + other fitting vehicles, cached in the graph
 ```
 
-**Tool selection through MCP:** the graph is checked first; the agent only calls the teardown-parts tools for data the graph doesn't already have. Graph-first, API-second.
+- **Graph first, tools second.** The agent only calls MCP tools for data the graph does not already have. A repeat VIN is answered from the graph in a few seconds with no eBay searches.
+- **Memory across sessions.** `PriceSignal` history and per-donor `Decision` nodes persist (3-day price TTL). A new donor of the same model inherits outcomes through `SIMILAR_TO`.
+- **Explainable.** Every verdict is returned with the graph path behind it (`Part -> HAS_PRICE_SIGNAL -> PriceSignal{score}`), and the page draws this run's graph and lists the full decision trace.
 
-**Memory across sessions:** PriceSignal history and past Decision nodes persist. A second donor of the same model reuses cached signals and inherits outcomes from SIMILAR_TO donors — no graph experience required to see why.
+## Graph schema
 
-**Explainable results:** every verdict is printed with the Cypher path behind it (`Part→HAS_PRICE_SIGNAL→PriceSignal{score}`). Decisions you can trace.
+```
+(DonorCar)-[:HAS_PART]->(Part)-[:HAS_PRICE_SIGNAL]->(PriceSignal {p25,p75,score,checked_at})
+(Part)-[:LED_TO_DECISION]->(Decision {vin,part,verdict,at})
+(DonorCar)-[:SIMILAR_TO]->(DonorCar)
+(DonorCar)-[:RECALL_FLAG]->(Recall)
+(Part)-[:SELL_THROUGH]->(SellSignal)
+```
 
-## What's reused vs new
+Part numbers and the vehicles they fit (`PartNumber -> LISTED_FOR -> FitVehicle`) are cached by the MCP server in its own `teardown` graph.
 
-- Reused (existing infrastructure): teardown-parts MCP server v1.1.0 — `decode_vin`, `check_recalls`, `get_pull_sheet`, `check_sell_through`, `ebay_lookup`. The pull sheet already ranks parts 0–100 from live eBay p25/p75 data; the graph's job is memory and traceability, not repricing.
-- New (built during the event): the FalkorDB schema, the agent decision loop, MCP tool selection, the decision trace output.
+## What is reused vs new
 
-## Setup
+- **Reused infrastructure:** the teardown-parts MCP server behind https://teardown.parts (tools: `decode_vin`, `check_recalls`, `get_pull_sheet`, `check_sell_through`, `ebay_lookup`, `find_interchange`, `hollander_group`). It already ranks parts 0-100 from live eBay p25/p75 data. The graph's job here is memory, coordination and traceability, not repricing.
+- **New during the event:** this repo (the `graph_buyer` schema, the agent decision loop, graph-first tool selection, the decision trace and graph view), plus a FalkorDB-backed cache added to the MCP server (Hollander fitment groups and eBay interchange results).
+
+## Run it
 
 ```bash
-docker run -p 6379:6379 falkordb/falkordb:latest
 npm install
-cp .env.example .env   # fill in TEARDOWN_PARTS_MCP_URL + TEARDOWN_PARTS_API_KEY
+cp .env.example .env     # fill in the MCP URL/key and FalkorDB connection
 npm start -- <17-char-VIN> [--sell-through]
 ```
 
-## Submission
+FalkorDB can be FalkorDB Cloud or local (`docker run -p 6379:6379 falkordb/falkordb:latest`). The web page and API (`/api/buy`, `/api/interchange`) deploy to Vercel as-is; set the same variables in the project settings.
 
-- Tracks: 01 (Agents That Act on Connected Data), 02 (Agent Memory and Coordination)
-- Demo: run the CLI against a VIN; FalkorDB Browser (`localhost:3000` via the docker UI, or `falkordb/falkordb` browser) shows the graph
-- No live deployment required: complete local setup instructions + working demo video
+## Demo script (60 seconds)
+
+1. Open the live page, run the default VIN: first run on a model prices every part live (can take up to ~60 s).
+2. Run it again: badge shows "priced from graph memory - 0 live searches".
+3. Run a second VIN of the same model: decisions are inherited from similar donors.
+4. Open "decision trace" and the graph view to see why each verdict was made.
+5. Press "Check interchange for top PULLs" for part numbers and other vehicles each part fits.
