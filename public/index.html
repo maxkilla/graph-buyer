@@ -95,7 +95,10 @@ async function run(withInterchange){
   out.innerHTML = '<div class="loading"><span class="spinner"></span>Agent is working — decoding VIN, checking memory, pricing parts…</div>';
   try {
     const r = await fetch('/api/buy?vin=' + encodeURIComponent(vin) + (withInterchange ? '&interchange=1' : ''));
-    const d = await r.json();
+    const text = await r.text();
+    let d;
+    try { d = JSON.parse(text); }
+    catch { throw new Error('API returned HTTP ' + r.status + ' (not JSON' + (r.status === 500 ? ' — likely a timeout on heavy lookups; try again, results cache for 3 days' : '') + ')'); }
     if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
     render(d);
   } catch(e) {

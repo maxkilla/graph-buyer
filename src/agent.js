@@ -165,9 +165,21 @@ export async function runBuyer(vin, { sellThrough = false, interchange = false }
   //    vehicles each top PULL part fits. Stored as PartNumber/FitVehicle nodes.
   let interchangeOut = [];
   if (interchange) {
-    for (const part of topPulls) {
+    // Heavy eBay lookups run in parallel (worker caches 3 days, so repeat
+    // calls are fast); graph writes stay sequential.
+    const icResults = await Promise.all(topPulls.map(async (part) => {
       try {
-        const ic = await tp.findInterchange(vehicle, part);
+        return { part, ic: await tp.findInterchange(vehicle, part) };
+      } catch (e) {
+        return { part, error: e.message };
+      }
+    }));
+    for (const { part, ic, error } of icResults) {
+      if (error || !ic) {
+        trace.push(`Interchange(${part}): lookup failed (${error || 'no result'})`);
+        continue;
+      }
+      try {
         const fits = [];
         const seen = new Set();
         const numbers = [];
@@ -202,7 +214,7 @@ export async function runBuyer(vin, { sellThrough = false, interchange = false }
         const fitStr = fits.slice(0, 6).map((f) => `${f.years || ''} ${f.make} ${f.model}`.trim()).join(', ');
         trace.push(`Interchange(${part}): ${numbers.length} number(s)${fitStr ? ` — also fits ${fitStr}` : ''}`);
       } catch (e) {
-        trace.push(`Interchange(${part}): lookup failed (${e.message})`);
+        trace.push(`Interchange(${part}): graph write failed (${e.message})`);
       }
     }
   }
