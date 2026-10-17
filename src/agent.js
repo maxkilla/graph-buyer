@@ -188,18 +188,17 @@ export function printReport(report) {
 Donor: ${report.vehicle} (${report.vin})`);
   console.log(`Open recalls: ${report.openRecalls} | Similar donors consulted: ${report.similarDonors} | Pricing: ${report.pricing}
 `);
-  console.log('PART'.padEnd(42) + 'VERDICT'.padEnd(8) + 'SCORE'.padEnd(7) + 'P25âP75');
+  console.log('PART'.padEnd(42) + 'VERDICT'.padEnd(8) + 'SCORE'.padEnd(7) + 'P25-P75');
   console.log('-'.repeat(80));
   for (const d of report.decisions) {
     console.log(
       d.part.padEnd(42).slice(0, 42) +
         d.verdict.padEnd(8) +
         String(d.score).padEnd(7) +
-        `$${d.p25 ?? '?'}â$${d.p75 ?? '?'}`,
+        `$${d.p25 ?? '?'}-$${d.p75 ?? '?'}`,
     );
   }
-  console.log('
-Decision trace:');
+  console.log('\nDecision trace:');
   for (const t of report.trace) console.log('  ' + t);
   console.log();
 }
