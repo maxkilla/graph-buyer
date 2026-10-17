@@ -87,23 +87,48 @@ const out = $('out'), go = $('go'), vinEl = $('vin');
 
 function money(n){ return n==null ? '—' : '$' + Number(n).toFixed(2).replace(/\.00$/,''); }
 
-async function run(withInterchange){
+async function run(){
   const vin = vinEl.value.trim().toUpperCase();
   if (vin.length !== 17) { out.innerHTML = '<div class="err">VIN must be 17 characters.</div>'; return; }
   go.disabled = true;
-  const icBtn = document.getElementById('icbtn'); if (icBtn) icBtn.disabled = true;
   out.innerHTML = '<div class="loading"><span class="spinner"></span>Agent is working — decoding VIN, checking memory, pricing parts…</div>';
+  icOut = null;
   try {
-    const r = await fetch('/api/buy?vin=' + encodeURIComponent(vin) + (withInterchange ? '&interchange=1' : ''));
+    const r = await fetch('/api/buy?vin=' + encodeURIComponent(vin));
     const text = await r.text();
     let d;
     try { d = JSON.parse(text); }
     catch { throw new Error('API returned HTTP ' + r.status + ' (not JSON' + (r.status === 500 ? ' — likely a timeout on heavy lookups; try again, results cache for 3 days' : '') + ')'); }
     if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    lastD = d;
     render(d);
   } catch(e) {
     out.innerHTML = '<div class="err">Error: ' + String(e.message||e).replace(/</g,'&lt;') + '</div>';
   } finally { go.disabled = false; }
+}
+
+let lastD = null;
+let icOut = null;
+
+async function runInterchange(){
+  if (!lastD) return;
+  const btn = document.getElementById('icbtn');
+  if (btn) btn.disabled = true;
+  const pulls = lastD.decisions.filter(x => x.verdict === 'PULL').slice(0, 3);
+  const vin = lastD.vin, vehicle = lastD.vehicle;
+  const box = document.getElementById('ic-results');
+  if (box) box.innerHTML = '<div class="loading"><span class="spinner"></span>Running interchange lookups — one call per part, first time can take a minute…</div>';
+  const results = await Promise.all(pulls.map(async (p) => {
+    try {
+      const r = await fetch('/api/interchange?vin=' + encodeURIComponent(vin) + '&vehicle=' + encodeURIComponent(vehicle) + '&part=' + encodeURIComponent(p.part));
+      const t = await r.text();
+      const j = JSON.parse(t);
+      if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+      return j;
+    } catch (e) { return { part: p.part, error: String(e.message || e) }; }
+  }));
+  icOut = results;
+  render(lastD);
 }
 
 function render(d){
@@ -121,10 +146,11 @@ function render(d){
   else h += '<span class="badge">first look — no prior memory</span>';
   if (d.similarDonors > 0) h += '<span class="badge hot">↔ ' + d.similarDonors + ' decision(s) inherited from similar donors</span>';
   h += '</div>';
-  if (pulls.length && !(d.interchange && d.interchange.length)) {
-    h += '<div style="margin:10px 0"><button id="icbtn" onclick="run(true)">Check interchange for top PULLs</button> '
-       + '<span class="hint" style="margin:0">real part numbers + other vehicles they fit (cached 3 days)</span></div>';
+  if (pulls.length) {
+    h += '<div style="margin:10px 0"><button id="icbtn" onclick="runInterchange()">Check interchange for top PULLs</button> '
+       + '<span class="hint" style="margin:0">real part numbers + other vehicles they fit (cached 3 days, one call per part)</span></div>';
   }
+  h += '<div id="ic-results"></div>';
   h += '<div class="section-title">Graph — this run, live from FalkorDB</div>' + graphSVG(d);
   h += '<div class="legend"><span class="g">●</span> PULL &nbsp;<span class="s">●</span> SKIP &nbsp;·&nbsp; node size = score · hover a node for details · center = DonorCar, ring = Parts</div>';
   if (d.sharedParts && d.sharedParts.length) {
@@ -135,9 +161,13 @@ function render(d){
     }
   }
 
-  if (d.interchange && d.interchange.length) {
+  if (icOut && icOut.length) {
     h += '<div class="section-title">Interchange \u2014 other vehicles these parts sell for</div>';
-    for (const ic of d.interchange) {
+    for (const ic of icOut) {
+      if (ic.error) {
+        h += '<div class="err">Interchange(' + esc(ic.part) + '): ' + esc(ic.error) + '</div>';
+        continue;
+      }
       h += '<div class="card"><span class="verdict PULL">PULL</span><div class="info"><div class="part">' + esc(ic.part) + '</div>'
          + '<div class="price">OEM/part numbers: ' + (ic.numbers.length ? ic.numbers.map(esc).join(', ') : '\u2014') + '</div>'
          + '<div class="price">also fits: ' + (ic.fits.length ? ic.fits.slice(0, 8).map((f) =>
@@ -184,7 +214,7 @@ function graphSVG(d){
   return s + '</svg>';
 }
 function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-go.onclick = () => run(false);
+go.onclick = () => run();
 vinEl.onkeydown = e => { if (e.key === 'Enter') run(); };
 </script>
 </body>
