@@ -17,8 +17,14 @@ export async function connectGraph() {
   return db.selectGraph('graph_buyer');
 }
 
-// FalkorDB returns rows as arrays with headers; this turns them into objects.
+// falkordb v6 returns { metadata, data: [{col: value, ...}, ...] } — rows
+// already shaped as objects keyed by column alias. Older clients returned
+// { headers: [...], data: [[...], ...] }; keep supporting that shape too.
 export function rows(result) {
+  const data = result?.data || [];
+  if (data.length && data[0] && typeof data[0] === 'object' && !Array.isArray(data[0])) {
+    return data;
+  }
   const names = (result.headers || []).map((h) => (typeof h === 'string' ? h : h.name));
-  return (result.data || []).map((r) => Object.fromEntries(names.map((n, i) => [n, r[i]])));
+  return data.map((r) => Object.fromEntries(names.map((n, i) => [n, r[i]])));
 }
