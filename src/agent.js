@@ -1,7 +1,7 @@
 import { connectGraph, rows } from './graph.js';
 import { tp } from './tools.js';
 
-const PULL_SCORE_THRESHOLD = 50;
+const PULL_SCORE_THRESHOLD = 30;
 
 // The agent's decision loop. Every step either reads the graph or writes to
 // it; MCP tools are only called for data the graph doesn't already have.
