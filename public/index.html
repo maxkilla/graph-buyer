@@ -50,6 +50,13 @@
   @keyframes spin { to { transform:rotate(360deg); } }
   .err { color:var(--red); background:#3d1414; border:1px solid var(--red); border-radius:8px; padding:12px 14px; font-size:14px; }
   h2.vehicle { font-size:20px; margin:6px 0 2px; }
+  details.schema { margin:14px 0 4px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 14px; }
+  details.schema summary { color:var(--txt); font-size:13px; font-weight:600; cursor:pointer; }
+  details.schema pre { background:none; border:0; padding:8px 0 2px; margin:0; font-size:12.5px; color:var(--txt); max-height:none; }
+  details.schema .dim { color:var(--dim); }
+  details.schema p.dim { font-size:12px; margin:6px 0 4px; }
+  .legend { text-align:center; color:var(--dim); font-size:12px; margin:2px 0 6px; }
+  .legend .g { color:var(--green); } .legend .s { color:#6e7681; }
   .section-title { color:var(--dim); font-size:12px; text-transform:uppercase; letter-spacing:1px; margin:22px 0 4px; }
 </style>
 </head>
@@ -64,6 +71,13 @@
     <button id="go">Evaluate</button>
   </div>
   <p class="hint">First run on a new vehicle can take up to ~60s — every price is looked up live. Re-runs hit graph memory and skip re-pricing.</p>
+  <details open class="schema">
+    <summary>How the graph works</summary>
+    <pre>DonorCar ──HAS_PART──▶ Part ──HAS_PRICE_SIGNAL──▶ PriceSignal <span class="dim">(live eBay)</span>
+   │                    ╰──LED_TO_DECISION──▶ Decision <span class="dim">(PULL / SKIP)</span>
+   ╰──SIMILAR_TO──▶ DonorCar <span class="dim">(same year/make/model — inherits outcomes)</span></pre>
+    <p class="dim">Every run reads and writes this FalkorDB graph. Re-runs and similar donors read the memory back instead of starting cold.</p>
+  </details>
   <div id="out"></div>
 </main>
 <script>
@@ -98,7 +112,10 @@ function render(d){
   if (d.openRecalls) h += '<span class="badge warn">' + d.openRecalls + ' open recalls</span>';
   if (memN) h += '<span class="badge hot">⚡ memory hit: ' + memN + ' prior decisions</span>';
   else h += '<span class="badge">first look — no prior memory</span>';
+  if (d.similarDonors > 0) h += '<span class="badge hot">↔ ' + d.similarDonors + ' decision(s) inherited from similar donors</span>';
   h += '</div>';
+  h += '<div class="section-title">Graph — this run, live from FalkorDB</div>' + graphSVG(d);
+  h += '<div class="legend"><span class="g">●</span> PULL &nbsp;<span class="s">●</span> SKIP &nbsp;·&nbsp; node size = score · hover a node for details · center = DonorCar, ring = Parts</div>';
 
   h += '<div class="section-title">Pull list</div>';
   const sorted = [...d.decisions].sort((a,b) => (b.verdict==='PULL')-(a.verdict==='PULL') || b.score-a.score);
@@ -113,6 +130,30 @@ function render(d){
   h += '<details><summary>decision trace (' + d.trace.length + ' steps)</summary><pre>'
      + d.trace.map(esc).join('\n') + '</pre></details>';
   out.innerHTML = h;
+}
+function graphSVG(d){
+  const W=620, H=520, cx=W/2, cy=H/2, R=185, n=d.decisions.length;
+  let s = '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;max-width:620px;display:block;margin:0 auto" role="img" aria-label="graph visualization">';
+  d.decisions.forEach((x,i)=>{
+    const a=(i/n)*Math.PI*2 - Math.PI/2;
+    s += '<line x1="'+cx+'" y1="'+cy+'" x2="'+(cx+R*Math.cos(a)).toFixed(1)+'" y2="'+(cy+R*Math.sin(a)).toFixed(1)+'" stroke="#30363d" stroke-width="1"/>';
+  });
+  s += '<circle cx="'+cx+'" cy="'+cy+'" r="30" fill="#1f6feb" stroke="#58a6ff" stroke-width="2"/>'
+     + '<text x="'+cx+'" y="'+(cy+4)+'" text-anchor="middle" font-size="11" fill="#fff" font-weight="700">CAR</text>'
+     + '<title>'+esc(d.vehicle||d.vin)+' — DonorCar</title>';
+  d.decisions.forEach((x,i)=>{
+    const a=(i/n)*Math.PI*2 - Math.PI/2;
+    const px=cx+R*Math.cos(a), py=cy+R*Math.sin(a);
+    const r=(5 + Math.min(100,x.score)/100*9).toFixed(1);
+    const pull = x.verdict==='PULL';
+    s += '<circle cx="'+px.toFixed(1)+'" cy="'+py.toFixed(1)+'" r="'+r+'" fill="'+(pull?'#3fb950':'#6e7681')+'" stroke="'+(pull?'#9ee6a8':'#30363d')+'" stroke-width="'+(pull?2:1)+'">'
+       + '<title>'+esc(x.part)+' — '+x.verdict+' (score '+x.score+', '+money(x.p25)+'–'+money(x.p75)+')</title></circle>';
+    if (pull) {
+      const lx=cx+(R+36)*Math.cos(a), ly=cy+(R+36)*Math.sin(a);
+      s += '<text x="'+lx.toFixed(1)+'" y="'+(ly+4).toFixed(1)+'" text-anchor="middle" font-size="11" fill="#9ee6a8">'+esc(x.part)+'</text>';
+    }
+  });
+  return s + '</svg>';
 }
 function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 go.onclick = run;
