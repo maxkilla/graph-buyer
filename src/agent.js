@@ -5,7 +5,7 @@ const PULL_SCORE_THRESHOLD = 30;
 
 // The agent's decision loop. Every step either reads the graph or writes to
 // it; MCP tools are only called for data the graph doesn't already have.
-export async function runBuyer(vin, { sellThrough = false } = {}) {
+export async function runBuyer(vin, { sellThrough = false, interchange = false } = {}) {
   const graph = await connectGraph();
   const trace = [];
 
@@ -160,7 +160,54 @@ export async function runBuyer(vin, { sellThrough = false } = {}) {
     }
   }
 
-  // 7. Cross-donor reach: shared Part nodes reveal the other donors
+  // 7. Interchange is on-demand (heavy eBay searches; the worker caches
+  //    results 3 days in its own graph): real part numbers + the other
+  //    vehicles each top PULL part fits. Stored as PartNumber/FitVehicle nodes.
+  let interchangeOut = [];
+  if (interchange) {
+    for (const part of topPulls) {
+      try {
+        const ic = await tp.findInterchange(vehicle, part);
+        const fits = [];
+        const seen = new Set();
+        const numbers = [];
+        for (const entry of ic.interchange || []) {
+          if (!entry.part_number) continue;
+          numbers.push(entry.part_number);
+          await graph.query(
+            `MERGE (pn:PartNumber {number: $number})
+             SET pn.part = $part
+             WITH pn
+             MATCH (d:DonorCar {vin: $vin})-[:HAS_PART]->(p:Part {name: $part})
+             MERGE (p)-[:HAS_NUMBER]->(pn)`,
+            { params: { number: entry.part_number, part, vin } },
+          );
+          for (const f of entry.also_fits || []) {
+            if (f.is_requested_vehicle) continue;
+            const key = `${f.make}|${f.model}`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              fits.push({ make: f.make, model: f.model, years: f.years, median_price: f.median_price, listings: f.listings, hollander: f.hollander || null });
+            }
+            await graph.query(
+              `MERGE (pn:PartNumber {number: $number})
+               MERGE (v:FitVehicle {make: $make, model: $model})
+               SET v.years = $years, v.median_price = $median
+               MERGE (pn)-[:LISTED_FOR]->(v)`,
+              { params: { number: entry.part_number, make: f.make, model: f.model, years: f.years || '', median: f.median_price ?? null } },
+            );
+          }
+        }
+        interchangeOut.push({ part, numbers: [...new Set(numbers)], fits, hollander: ic.hollander || null });
+        const fitStr = fits.slice(0, 6).map((f) => `${f.years || ''} ${f.make} ${f.model}`.trim()).join(', ');
+        trace.push(`Interchange(${part}): ${numbers.length} number(s)${fitStr ? ` — also fits ${fitStr}` : ''}`);
+      } catch (e) {
+        trace.push(`Interchange(${part}): lookup failed (${e.message})`);
+      }
+    }
+  }
+
+  // 8. Cross-donor reach: shared Part nodes reveal the other donors
   //    carrying the same part — broadens who a pulled part can sell to.
   const pullParts = decisions.filter((d) => d.verdict === 'PULL').map((d) => d.part);
   let sharedParts = [];
@@ -179,24 +226,27 @@ export async function runBuyer(vin, { sellThrough = false } = {}) {
     if (sharedParts.length) trace.push(`Cross-donor reach: ${sharedParts.length} PULL part(s) also appear on ${[...new Set(shared.flatMap((s) => byPart[s.part] ?? []))].length} other donor(s)`);
   }
 
-  return { vin, vehicle, openRecalls: openRecalls.length, similarDonors: similar.length, pricing, decisions, sharedParts, trace };
+  return { vin, vehicle, openRecalls: openRecalls.length, similarDonors: similar.length, pricing, decisions, sharedParts, interchange: interchangeOut, trace };
 }
 
 // CLI-friendly printout: verdict table, then the decision trace.
 export function printReport(report) {
-  console.log(`\nDonor: ${report.vehicle} (${report.vin})`);
-  console.log(`Open recalls: ${report.openRecalls} | Similar donors consulted: ${report.similarDonors} | Pricing: ${report.pricing}\n`);
-  console.log('PART'.padEnd(42) + 'VERDICT'.padEnd(8) + 'SCORE'.padEnd(7) + 'P25–P75');
+  console.log(`
+Donor: ${report.vehicle} (${report.vin})`);
+  console.log(`Open recalls: ${report.openRecalls} | Similar donors consulted: ${report.similarDonors} | Pricing: ${report.pricing}
+`);
+  console.log('PART'.padEnd(42) + 'VERDICT'.padEnd(8) + 'SCORE'.padEnd(7) + 'P25âP75');
   console.log('-'.repeat(80));
   for (const d of report.decisions) {
     console.log(
       d.part.padEnd(42).slice(0, 42) +
         d.verdict.padEnd(8) +
         String(d.score).padEnd(7) +
-        `$${d.p25 ?? '?'}–$${d.p75 ?? '?'}`,
+        `$${d.p25 ?? '?'}â$${d.p75 ?? '?'}`,
     );
   }
-  console.log('\nDecision trace:');
+  console.log('
+Decision trace:');
   for (const t of report.trace) console.log('  ' + t);
   console.log();
 }

@@ -1,9 +1,10 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
-// MCP client for the teardown-parts server (v1.1.0, StreamableHTTP, Bearer auth).
-// The server's 5 tools are the agent's only external data source:
-// decode_vin, check_recalls, get_pull_sheet, check_sell_through, ebay_lookup.
+// MCP client for the teardown-parts server (v1.2.0, StreamableHTTP, Bearer auth).
+// The server's tools are the agent's only external data source:
+// decode_vin, check_recalls, get_pull_sheet, check_sell_through, ebay_lookup,
+// find_interchange, hollander_group.
 let client = null;
 
 export async function mcp() {
@@ -34,4 +35,7 @@ export const tp = {
   getPullSheet: (vehicle) => callTool('get_pull_sheet', { vehicle }),
   checkSellThrough: (vehicle, part) => callTool('check_sell_through', { vehicle, part }),
   ebayLookup: (query, opts = {}) => callTool('ebay_lookup', { query, ...opts }),
+  findInterchange: (vehicle, part, opts = {}) => callTool('find_interchange', { vehicle, part, ...opts }),
+  hollanderGroup: (year, make, model, part, candidates) =>
+    callTool('hollander_group', candidates ? { year, make, model, part, candidates } : { year, make, model, part }),
 };
