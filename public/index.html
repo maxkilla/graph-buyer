@@ -111,6 +111,7 @@ function render(d){
   h += '<span class="badge ok">' + pulls.length + ' PULL</span>';
   if (d.openRecalls) h += '<span class="badge warn">' + d.openRecalls + ' open recalls</span>';
   if (d.pricing === 'memory') h += '<span class="badge hot">⚡ priced from graph memory — 0 live searches</span>';
+  else if (d.pricing === 'memory-stale') h += '<span class="badge hot">⚡ live sheet came back empty — showing last known graph prices</span>';
   else if (memN) h += '<span class="badge hot">⚡ memory hit: ' + memN + ' prior decisions</span>';
   else h += '<span class="badge">first look — no prior memory</span>';
   if (d.similarDonors > 0) h += '<span class="badge hot">↔ ' + d.similarDonors + ' decision(s) inherited from similar donors</span>';
