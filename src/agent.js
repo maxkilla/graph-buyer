@@ -58,35 +58,68 @@ export async function runBuyer(vin, { sellThrough = false } = {}) {
   }
   trace.push(`${openRecalls.length} open recall(s) flagged`);
 
-  // 5. Pull sheet -> Part nodes + PriceSignal nodes + Decision nodes.
-  //    The pull sheet already ranks parts 0-100 (p25/p75, live eBay data);
-  //    the graph's job is memory and traceability, not repricing.
-  const sheet = await tp.getPullSheet(vehicle);
+  // 5. Pricing: reuse fresh graph PriceSignals when this VIN was priced
+  //    recently (3-day TTL, same as the pull-sheet cache) — no repeat eBay
+  //    searches. Otherwise run the live pull sheet and persist the signals.
+  const PRICE_TTL_MS = 3 * 24 * 60 * 60 * 1000;
+  const cutoff = new Date(Date.now() - PRICE_TTL_MS).toISOString();
+  const donorParts = rows(
+    await graph.query(
+      `MATCH (d:DonorCar {vin: $vin})-[:HAS_PART]->(p:Part) RETURN p.name AS part`,
+      { params: { vin } },
+    ),
+  ).map((r) => r.part);
+  const freshSignals = rows(
+    await graph.query(
+      `MATCH (d:DonorCar {vin: $vin})-[:HAS_PART]->(p:Part)-[:HAS_PRICE_SIGNAL]->(s:PriceSignal {vin: $vin})
+       WHERE s.checked_at > $cutoff
+       RETURN p.name AS part, s.score AS score, s.p25 AS p25, s.p75 AS p75, s.checked_at AS checked_at
+       ORDER BY s.checked_at DESC`,
+      { params: { vin, cutoff } },
+    ),
+  );
+  const signalByPart = {};
+  for (const s of freshSignals) signalByPart[s.part] ??= s; // latest wins
+  const pricing = donorParts.length > 0 && donorParts.every((p) => signalByPart[p]) ? 'memory' : 'live';
+
   const decisions = [];
   const topPulls = [];
-  for (const part of sheet.parts || []) {
-    const verdict = part.score >= PULL_SCORE_THRESHOLD ? 'PULL' : 'SKIP';
-    const cached = priorByPart[part.part_name];
-    await graph.query(
-      `MATCH (d:DonorCar {vin: $vin})
-       MERGE (p:Part {name: $part})
-       MERGE (d)-[:HAS_PART]->(p)
-       CREATE (s:PriceSignal {p25: $p25, p75: $p75, listings: $listings, score: $score, checked_at: $at})
-       CREATE (p)-[:HAS_PRICE_SIGNAL]->(s)
-       CREATE (p)-[:LED_TO_DECISION]->(:Decision {part: $part, verdict: $verdict, cached: $cached, at: $at})`,
-      {
-        params: {
-          vin,
-          part: part.part_name,
-          p25: part.price_low, p75: part.price_high,
-          listings: part.listing_count, score: part.score,
-          verdict, cached: cached || null, at: new Date().toISOString(),
+  if (pricing === 'memory') {
+    trace.push(`0 live searches — ${donorParts.length} part(s) priced from graph memory (signals fresh as of ${cutoff.slice(0, 10)})`);
+    for (const part of donorParts) {
+      const s = signalByPart[part];
+      const verdict = s.score >= PULL_SCORE_THRESHOLD ? 'PULL' : 'SKIP';
+      decisions.push({ part, verdict, score: s.score, p25: s.p25, p75: s.p75 });
+      if (verdict === 'PULL' && topPulls.length < 3) topPulls.push(part);
+      trace.push(`Decision(${part}) = ${verdict} via graph memory PriceSignal{score:${s.score}}`);
+    }
+  } else {
+    const sheet = await tp.getPullSheet(vehicle);
+    for (const part of sheet.parts || []) {
+      const verdict = part.score >= PULL_SCORE_THRESHOLD ? 'PULL' : 'SKIP';
+      const cached = priorByPart[part.part_name];
+      await graph.query(
+        `MATCH (d:DonorCar {vin: $vin})
+         MERGE (p:Part {name: $part})
+         MERGE (d)-[:HAS_PART]->(p)
+         CREATE (s:PriceSignal {vin: $vin, p25: $p25, p75: $p75, listings: $listings, score: $score, checked_at: $at})
+         CREATE (p)-[:HAS_PRICE_SIGNAL]->(s)
+         CREATE (p)-[:LED_TO_DECISION]->(:Decision {part: $part, verdict: $verdict, cached: $cached, at: $at})`,
+        {
+          params: {
+            vin,
+            part: part.part_name,
+            p25: part.price_low, p75: part.price_high,
+            listings: part.listing_count, score: part.score,
+            verdict, cached: cached || null, at: new Date().toISOString(),
+          },
         },
-      },
-    );
-    decisions.push({ part: part.part_name, verdict, score: part.score, p25: part.price_low, p75: part.price_high });
-    if (verdict === 'PULL' && topPulls.length < 3) topPulls.push(part.part_name);
-    trace.push(`Decision(${part.part_name}) = ${verdict} via Part→HAS_PRICE_SIGNAL→PriceSignal{score:${part.score}}`);
+      );
+      decisions.push({ part: part.part_name, verdict, score: part.score, p25: part.price_low, p75: part.price_high });
+      if (verdict === 'PULL' && topPulls.length < 3) topPulls.push(part.part_name);
+      trace.push(`Decision(${part.part_name}) = ${verdict} via Part→HAS_PRICE_SIGNAL→PriceSignal{score:${part.score}}`);
+    }
+    trace.push(`${sheet.parts?.length ?? 0} part(s) priced live — PriceSignals persisted to graph`);
   }
 
   // 6. Sell-through stays on-demand (extra API calls): only for top PULLs.
@@ -102,13 +135,32 @@ export async function runBuyer(vin, { sellThrough = false } = {}) {
     }
   }
 
-  return { vin, vehicle, openRecalls: openRecalls.length, similarDonors: similar.length, decisions, trace };
+  // 7. Cross-donor reach: shared Part nodes reveal the other donors
+  //    carrying the same part — broadens who a pulled part can sell to.
+  const pullParts = decisions.filter((d) => d.verdict === 'PULL').map((d) => d.part);
+  let sharedParts = [];
+  if (pullParts.length) {
+    const shared = rows(
+      await graph.query(
+        `MATCH (d:DonorCar {vin: $vin})-[:HAS_PART]->(p:Part)<-[:HAS_PART]-(o:DonorCar)
+         WHERE o.vin <> $vin AND p.name IN $parts
+         RETURN p.name AS part, o.year AS year, o.make AS make, o.model AS model`,
+        { params: { vin, parts: pullParts } },
+      ),
+    );
+    const byPart = {};
+    for (const r of shared) (byPart[r.part] ??= []).push(`${r.year} ${r.make} ${r.model}`.trim());
+    sharedParts = pullParts.filter((p) => byPart[p]).map((p) => ({ part: p, donors: [...new Set(byPart[p])] }));
+    if (sharedParts.length) trace.push(`Cross-donor reach: ${sharedParts.length} PULL part(s) also appear on ${[...new Set(shared.flatMap((s) => byPart[s.part] ?? []))].length} other donor(s)`);
+  }
+
+  return { vin, vehicle, openRecalls: openRecalls.length, similarDonors: similar.length, pricing, decisions, sharedParts, trace };
 }
 
 // CLI-friendly printout: verdict table, then the decision trace.
 export function printReport(report) {
   console.log(`\nDonor: ${report.vehicle} (${report.vin})`);
-  console.log(`Open recalls: ${report.openRecalls} | Similar donors consulted: ${report.similarDonors}\n`);
+  console.log(`Open recalls: ${report.openRecalls} | Similar donors consulted: ${report.similarDonors} | Pricing: ${report.pricing}\n`);
   console.log('PART'.padEnd(42) + 'VERDICT'.padEnd(8) + 'SCORE'.padEnd(7) + 'P25–P75');
   console.log('-'.repeat(80));
   for (const d of report.decisions) {

@@ -76,7 +76,7 @@
     <pre>DonorCar ──HAS_PART──▶ Part ──HAS_PRICE_SIGNAL──▶ PriceSignal <span class="dim">(live eBay)</span>
    │                    ╰──LED_TO_DECISION──▶ Decision <span class="dim">(PULL / SKIP)</span>
    ╰──SIMILAR_TO──▶ DonorCar <span class="dim">(same year/make/model — inherits outcomes)</span></pre>
-    <p class="dim">Every run reads and writes this FalkorDB graph. Re-runs and similar donors read the memory back instead of starting cold.</p>
+    <p class="dim">Every run reads and writes this FalkorDB graph. Fresh PriceSignals are reused — no repeat searches. Shared Part nodes show which other donors carry the same part.</p>
   </details>
   <div id="out"></div>
 </main>
@@ -110,12 +110,20 @@ function render(d){
   h += '<span class="badge">' + d.decisions.length + ' parts evaluated</span>';
   h += '<span class="badge ok">' + pulls.length + ' PULL</span>';
   if (d.openRecalls) h += '<span class="badge warn">' + d.openRecalls + ' open recalls</span>';
-  if (memN) h += '<span class="badge hot">⚡ memory hit: ' + memN + ' prior decisions</span>';
+  if (d.pricing === 'memory') h += '<span class="badge hot">⚡ priced from graph memory — 0 live searches</span>';
+  else if (memN) h += '<span class="badge hot">⚡ memory hit: ' + memN + ' prior decisions</span>';
   else h += '<span class="badge">first look — no prior memory</span>';
   if (d.similarDonors > 0) h += '<span class="badge hot">↔ ' + d.similarDonors + ' decision(s) inherited from similar donors</span>';
   h += '</div>';
   h += '<div class="section-title">Graph — this run, live from FalkorDB</div>' + graphSVG(d);
   h += '<div class="legend"><span class="g">●</span> PULL &nbsp;<span class="s">●</span> SKIP &nbsp;·&nbsp; node size = score · hover a node for details · center = DonorCar, ring = Parts</div>';
+  if (d.sharedParts && d.sharedParts.length) {
+    h += '<div class="section-title">Cross-donor reach — who else can use these parts</div>';
+    for (const sp of d.sharedParts) {
+      h += '<div class="card"><span class="verdict PULL">PULL</span><div class="info"><div class="part">' + esc(sp.part) + '</div>'
+         + '<div class="price">also seen on: ' + sp.donors.map(esc).join(', ') + '</div></div></div>';
+    }
+  }
 
   h += '<div class="section-title">Pull list</div>';
   const sorted = [...d.decisions].sort((a,b) => (b.verdict==='PULL')-(a.verdict==='PULL') || b.score-a.score);
