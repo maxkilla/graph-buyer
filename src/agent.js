@@ -80,7 +80,7 @@ export async function runBuyer(vin, { sellThrough = false } = {}) {
   );
   const signalByPart = {};
   for (const s of freshSignals) signalByPart[s.part] ??= s; // latest wins
-  const pricing = donorParts.length > 0 && donorParts.every((p) => signalByPart[p]) ? 'memory' : 'live';
+  let pricing = donorParts.length > 0 && donorParts.every((p) => signalByPart[p]) ? 'memory' : 'live';
 
   const decisions = [];
   const topPulls = [];
@@ -95,7 +95,32 @@ export async function runBuyer(vin, { sellThrough = false } = {}) {
     }
   } else {
     const sheet = await tp.getPullSheet(vehicle);
-    for (const part of sheet.parts || []) {
+    const liveParts = sheet.parts || [];
+    if (!liveParts.length && donorParts.length) {
+      // Live pull sheet came back empty — fall back to the freshest graph
+      // signals instead of showing nothing.
+      pricing = 'memory-stale';
+      const stale = rows(
+        await graph.query(
+          `MATCH (d:DonorCar {vin: $vin})-[:HAS_PART]->(p:Part)-[:HAS_PRICE_SIGNAL]->(s:PriceSignal)
+           RETURN p.name AS part, s.score AS score, s.p25 AS p25, s.p75 AS p75, s.checked_at AS checked_at
+           ORDER BY s.checked_at DESC`,
+          { params: { vin } },
+        ),
+      );
+      const staleByPart = {};
+      for (const s of stale) staleByPart[s.part] ??= s;
+      const covered = donorParts.filter((p) => staleByPart[p]);
+      trace.push(`live pull sheet returned 0 parts — fell back to ${covered.length} stale graph signal(s)`);
+      for (const part of covered) {
+        const s = staleByPart[part];
+        const verdict = s.score >= PULL_SCORE_THRESHOLD ? 'PULL' : 'SKIP';
+        decisions.push({ part, verdict, score: s.score, p25: s.p25, p75: s.p75 });
+        if (verdict === 'PULL' && topPulls.length < 3) topPulls.push(part);
+        trace.push(`Decision(${part}) = ${verdict} via stale graph PriceSignal{score:${s.score}}`);
+      }
+    }
+    for (const part of liveParts) {
       const verdict = part.score >= PULL_SCORE_THRESHOLD ? 'PULL' : 'SKIP';
       const cached = priorByPart[part.part_name];
       await graph.query(
@@ -119,7 +144,7 @@ export async function runBuyer(vin, { sellThrough = false } = {}) {
       if (verdict === 'PULL' && topPulls.length < 3) topPulls.push(part.part_name);
       trace.push(`Decision(${part.part_name}) = ${verdict} via Part→HAS_PRICE_SIGNAL→PriceSignal{score:${part.score}}`);
     }
-    trace.push(`${sheet.parts?.length ?? 0} part(s) priced live — PriceSignals persisted to graph`);
+    if (liveParts.length) trace.push(`${liveParts.length} part(s) priced live — PriceSignals persisted to graph`);
   }
 
   // 6. Sell-through stays on-demand (extra API calls): only for top PULLs.
